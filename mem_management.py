@@ -1,50 +1,75 @@
 import random
+memory_size_units = 256  # 256 unidades de 4KB (1MB)
 nextFitPointer = 0
+TIME = 0  # Tempo de execução para viabilizar FIFO
+total_requests = 10000  # Ajuste de número de requisições
 
 
 class Process:
-    def __init__(self, PID, mem_units):
+    def __init__(self, PID, mem_units, t):
         self.PID = PID
         self.mem_units = mem_units
+        self.alloc_time = t
 
 
 class Memory:
     def __init__(self, size_in_units):
         self.size = size_in_units
+        self.memory = []
+        self.processList = []
         for i in range(size_in_units):
             self.memory.append(0)  # inicializa vazio
         self.freeMem = size_in_units
 
+    def getOldestProcess(self):
+        minTime = (2 ** 63) - 1
+        oldestProcess = None
+
+        for process in self.processList:
+            if process.alloc_time < minTime:
+                minTime = process.alloc_time
+                oldestProcess = process
+
+        return oldestProcess
+
     def firstFit(self, hole_locations, Process):
-        for i in range(Process.mem.units):
+        for i in range(Process.mem_units):
             self.memory[hole_locations[0] + i] = Process.PID
             self.freeMem -= 1
+        self.processList.append(Process)
 
     def bestFit(self, hole_locations, hole_sizes, Process):
-        bestHoleLocation = hole_locations(hole_sizes.index(min(hole_sizes)))
-        for i in range(Process.mem.units):
+        bestHoleLocation = hole_locations[hole_sizes.index(min(hole_sizes))]
+        for i in range(Process.mem_units):
             self.memory[bestHoleLocation + i] = Process.PID
             self.freeMem -= 1
+        self.processList.append(Process)
 
     def worstFit(self, hole_locations, hole_sizes, Process):
-        worstHoleLocation = hole_locations(hole_sizes.index(max(hole_sizes)))
-        for i in range(Process.mem.units):
+        worstHoleLocation = hole_locations[hole_sizes.index(max(hole_sizes))]
+        for i in range(Process.mem_units):
             self.memory[worstHoleLocation + i] = Process.PID
             self.freeMem -= 1
+        self.processList.append(Process)
 
     def nextFit(self, hole_locations, hole_sizes, Process, pointer):
-        for i in range(Process.mem.units):
+        if pointer >= len(self.memory):
+            pointer = 0
+        for i in range(Process.mem_units):
             self.memory[hole_locations[pointer] + i] = Process.PID
             self.freeMem -= 1
-        pointer += Process.mem.units
+        pointer += Process.mem_units
+        self.processList.append(Process)
         return pointer
 
-    def find_holes(self, Process):  # retorna todos os buracos onde o processo cabe
+    # retorna a quantidade de buracos em que o processo cabe, bem como suas localizações e tamanhos
+    def find_holes(self, Process, statReport):
         holes_found = 0
         hole_locations = []
         hole_sizes = []
         for i in range(len(self.memory)):
             if self.memory[i] == 0:  # se for buraco (processos não tem pid 0)
+                statReport.update_stats(1, 0, 0)
                 hole_size = 0
                 # itera do início do buraco até o fim da memória
                 for j in range(i, len(self.memory)):
@@ -61,19 +86,19 @@ class Memory:
         else:
             return -1
 
-    def alloc_mem(self, Process, method):
+    def alloc_mem(self, Process, method, statReport):
         holes_found = 0
         hole_locations = []
         hole_sizes = []
         if self.freeMem < Process.mem_units:
-            print("Não há memória suficiente para alocar o processo")
             return -1
         else:
-            if (self.find_holes(Process) == -1):
+            if (self.find_holes(Process, statReport) == -1):
+                statReport.failCount += 1
                 return -1
             else:
                 holes_found, hole_locations, hole_sizes = self.find_holes(
-                    Process)
+                    Process, statReport)
                 if method == 0:
                     self.firstFit(hole_locations, Process)  # first fit
                 if method == 1:
@@ -86,57 +111,95 @@ class Memory:
                     nextFitPointer = self.nextFit(
                         hole_locations, hole_sizes, Process, nextFitPointer)  # next fit
 
-    def dealloc_mem(self, PID):
-        flag = -1
-        for i in range(len(self.memory)):
-            if self.memory[i] == PID:
-                flag = 1
-                self.memory[i] = 0
-                self.freeMem += 1
-        return flag
+    # deleta um processo da memória seguindo critério FIFO, retorna -1 se não houver nada para ser deletado, e 1 se algo for deletado
+    def dealloc_mem(self):
+        if len(self.processList) < 1:
+            return -1
+        else:
+            oldProcess = self.getOldestProcess()
+            for i in range(len(self.memory)):
+                if self.memory[i] == oldProcess.PID:
+                    self.memory[i] = 0
+                    self.freeMem += 1
+            self.processList.remove(oldProcess)
+            return 1
 
-    # def frag_count(self):
-        # Implement the fragmentation count for each algorithm here
-        # Return the number of holes with size 1 or 2 units
+    def frag_count(self):
+        size_cont = 0
+        hole_cont = 0
+        flag = 0
+        for i in range(len(self.memory)):
+            if size_cont > 2:
+                size_cont = 0
+                flag = 1
+            if self.memory[i] == 0 and flag == 0:
+                size_cont += 1
+            if self.memory[i] != 0:
+                flag = 0
+                if size_cont > 0 and size_cont <= 2:
+                    hole_cont += 1
+        return hole_cont
 
 
 class RequestGenerator:
     def __init__(self):
         self.PID = 1
 
-    def generate_request(self):
+    def generate_request(self, statReport):
+        global TIME
+        statReport.update_stats(0, 1, 0)
         self.PID = random.randint(1, 100000)
         self.mem_units = random.randint(3, 15)
-        return self.PID, self.mem_units
+        self.alloc_time = TIME
+        TIME += 1
+        return self.PID, self.mem_units, self.alloc_time
 
 
-class StatsReporter:  # tempo médio em termos de número de nós atravessados na lista ligada até ocorrer a alocação e percentual de vezes que uma requisição de alocação falhou, pois não havia memória contígua suficiente. Esses parâmetros devem ser obtidos e atualizados a partir da inserção de cada requisição no componente de memória.
+class StatsReporter:
     def __init__(self):
-        self.first_fit_stats = []
-        self.next_fit_stats = []
-        self.best_fit_stats = []
-        self.worst_fit_stats = []
+        self.totalTime = 0
+        self.meanTime = 0
+        self.requestCount = 0
+        self.failCount = 0
 
-    # def update_stats(self, algorithm, mem_units, nodes_traversed, failed_allocation):
-        # Update the statistics for the specified algorithm with the given parameters
+    def update_stats(self, time, requestCount, failCount):
+        self.totalTime += time
+        self.requestCount += requestCount
+        self.failCount += failCount
+        self.meanTime = self.totalTime / self.requestCount
 
-    # def generate_report(self):
+    def generate_report(self):
+        print("Tempo medio de alocacao: " + str(self.meanTime))
+        print("Percentual de falhas: " +
+              str(self.failCount / (self.failCount + self.requestCount)))
         # Generate the report with the required parameters for each algorithm
         # Write the report to a file
 
 
-memory_size_units = 256  # 1 MB divided by 4 KB block size
-memory = Memory(memory_size_units)
-generator = RequestGenerator()
-reporter = StatsReporter()
+def main():
+    memory = Memory(memory_size_units)
+    generator = RequestGenerator()
+    statReport = StatsReporter()
+    Allocation_Algorithm = 0  # 0: First Fit, 1: Best Fit, 2: Worst Fit, 3: Next Fit
 
-total_requests = 100  # You can adjust the number of requests as needed
+    if Allocation_Algorithm == 0:
+        print("FIRST FIT:")
+    if Allocation_Algorithm == 1:
+        print("BEST FIT:")
+    if Allocation_Algorithm == 2:
+        print("WORST FIT:")
+    if Allocation_Algorithm == 3:
+        print("NEXT FIT:")
 
-for _ in range(total_requests):
-    pid, mem_units = generator.generate_request()
-    # Choose the appropriate allocation algorithm based on your simulation
-    # Call the corresponding alloc_mem and dealloc_mem functions
-    # Update the statistics using the StatsReporter class
+    for i in range(total_requests):
+        pid, mem_units, alloc_time = generator.generate_request(statReport)
+        process = Process(pid, mem_units, alloc_time)
+        if memory.alloc_mem(process, Allocation_Algorithm, statReport) == -1:
+            if memory.dealloc_mem() == -1:
+                print("Erro ao alocar processo")
+                break
+    statReport.generate_report()
+    print("Pelos dados levantados pelo programa, conclui-se que o algoritmo de alocação de memória que apresenta melhor desempenho é o First Fit., enquanto o pior desempenho é o do Worst Fit.")
 
-    # Generate the final report using the StatsReporter class
-reporter.generate_report()
+
+main()
